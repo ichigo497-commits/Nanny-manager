@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="נני">
+<meta name="theme-color" content="#c17b3f">
+<link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/3159/3159066.png">
+<title>ניהול לקוחות — נני</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+<script>
+  const firebaseConfig = {
+    apiKey: "AIzaSyBHvTh0GR1FXnDgLeXnO-eJI3seWDTONuQ",
+    authDomain: "nanny-cm.firebaseapp.com",
+    projectId: "nanny-cm",
+    storageBucket: "nanny-cm.firebasestorage.app",
+    messagingSenderId: "329877497783",
+    appId: "1:329877497783:web:ce78da02238784ce8cea32"
+  };
+  firebase.initializeApp(firebaseConfig);
+  window.db = firebase.firestore();
+
+  // Save to Firestore
+  window.saveToCloud = function(key, data) {
+    if (window.db) {
+      window.db.collection("data").doc(key).set({ items: data })
+        .catch(e => console.error("Save error:", e));
+    }
+  };
+
+  // Load from Firestore then render
+  window.loadFromCloud = async function(callback) {
+    try {
+      const leadsDoc = await window.db.collection("data").doc("leads").get();
+      if (leadsDoc.exists) {
+        localStorage.setItem("nanny_leads", JSON.stringify(leadsDoc.data().items || []));
+      }
+      const clientsDoc = await window.db.collection("data").doc("clients").get();
+      if (clientsDoc.exists) {
+        localStorage.setItem("nanny_clients", JSON.stringify(clientsDoc.data().items || []));
+      }
+    } catch(e) { console.error("Load error:", e); }
+    callback();
+  };
+</script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Segoe UI', Arial, sans-serif; background: #f5f3ee; direction: rtl; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState } = React;
+
+const STATUSES = ["חדש","פניתי","פנו אליי","נקבעה שיחת טלפון","התקיימה שיחת טלפון","נקבעה פגישה","התקיימה פגישה","לא מתאים","גויסתי"];
+const STATUS_NEEDS_SCHEDULE = ["נקבעה שיחת טלפון","נקבעה פגישה"];
+const WEEKDAYS = ["ראשון","שני","שלישי","רביעי","חמישי","שישי"];
+const CONS_OPTIONS = ["נוכחות הורית","בעלי חיים","סביבת עבודה","אין מעלית","אחר"];
+const CHECKBOXES = ["ללא נוכחות הורית","מודל שכר","צורת תשלום","חופשות","חודש נסיון"];
+const CLIENT_RESPONSIBILITIES = ["טיפול בילדים","בישול","קניות","קיפול כביסה","מקלחות"];
+const CLIENT_SHIFT = ["בוקר","צהריים","אחה\"צ","ערב","לילה"];
+const CLIENT_PAY_MODEL = ["שעתי","גלובאלי"];
+const COLORS = ["#F4A7B9","#FBBF77","#A8D8B9","#A0C4FF","#C9B1E8","#FFD580","#B5EAD7","#FFB7B2","#C7F2A4","#FFC8DD"];
+const COLORS_BG = COLORS.map(c => c + "55");
+
+const statusStyle = {
+  "חדש":{bg:"#e3f2fd",color:"#1565c0"},"פניתי":{bg:"#e8eaf6",color:"#283593"},
+  "פנו אליי":{bg:"#f3e5f5",color:"#6a1b9a"},"נקבעה שיחת טלפון":{bg:"#fff8e1",color:"#f57f17"},
+  "התקיימה שיחת טלפון":{bg:"#fff3e0",color:"#e65100"},"נקבעה פגישה":{bg:"#e8f5e9",color:"#2e7d32"},
+  "התקיימה פגישה":{bg:"#e0f2f1",color:"#00695c"},"לא מתאים":{bg:"#fce4ec",color:"#b71c1c"},
+  "גויסתי":{bg:"#1b5e20",color:"white"}
+};
+const scoreStyle = s => { const n=parseInt(s); return n>=7?{bg:"#e8f5e9",color:"#2e7d32"}:n>=5?{bg:"#fff8e1",color:"#f57f17"}:{bg:"#fce4ec",color:"#c62828"}; };
+
+function calcEarnings(l) {
+  const rate = parseFloat(l.hourlyRate)||0;
+  let h = 0;
+  (l.daySchedules||[]).forEach(ds => {
+    if(ds.from&&ds.to){
+      const[fh,fm]=ds.from.split(":").map(Number);
+      const[th,tm]=ds.to.split(":").map(Number);
+      h += Math.max(0,(th+tm/60)-(fh+fm/60));
+    }
+  });
+  const isGlobal = l.payModel==="גלובאלי" || l.type==="גלובאלי";
+  return { hoursPerWeek: h.toFixed(1), monthly: Math.round(h*(isGlobal?4.33:4)*rate) };
+}
+
+const emptyLead = () => ({id:Date.now(),name:"",source:"",status:"חדש",score:"",address:"",type:"שעתי",childAge:"",daySchedules:[],hourlyRate:"",scheduleDate:"",scheduleDay:"",scheduleTime:"",cons:[],consOther:"",pros:"",checks:[],notes:""});
+const emptyClient = () => ({id:Date.now(),name:"",childrenCount:"",daySchedules:[],type:"שעתי",shift:[],responsibilities:[],payModel:"שעתי",hourlyRate:"",manualSalary:"",notes:""});
+
+const iStyle = {width:"100%",border:"1px solid #e0dbd0",borderRadius:7,padding:"7px 10px",fontSize:13,fontFamily:"inherit",background:"#fafafa",outline:"none",boxSizing:"border-box"};
+
+function Sec({children,color="#c17b3f"}){return <div style={{fontSize:11,fontWeight:700,color,letterSpacing:0.8,marginTop:18,marginBottom:8,borderBottom:`1px solid ${color}33`,paddingBottom:4}}>{children}</div>}
+function F({label,id,form,onChange,placeholder,type="text"}){return <div style={{marginBottom:10}}>{label&&<div style={{fontSize:11,color:"#888",marginBottom:3}}>{label}</div>}<input type={type} value={form[id]||""} onChange={e=>onChange(id,e.target.value)} placeholder={placeholder||""} style={iStyle}/></div>}
+function G2({children}){return <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>{children}</div>}
+function G3({children}){return <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10}}>{children}</div>}
+
+function DayScheduler({schedules,onChange}){
+  const[openDay,setOpenDay]=useState(null);
+  const[tempFrom,setTempFrom]=useState("08:30");
+  const[tempTo,setTempTo]=useState("15:30");
+  const scheduled=schedules.map(s=>s.day);
+  const click=day=>{
+    if(scheduled.includes(day)){onChange(schedules.filter(s=>s.day!==day));if(openDay===day)setOpenDay(null);}
+    else{setOpenDay(day);setTempFrom("08:30");setTempTo("15:30");}
+  };
+  const confirm=day=>{if(!tempFrom||!tempTo)return;onChange([...schedules,{day,from:tempFrom,to:tempTo}]);setOpenDay(null);};
+  return <div style={{marginBottom:10}}>
+    <div style={{fontSize:11,color:"#888",marginBottom:6}}>ימים מועדפים</div>
+    <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:8}}>
+      {WEEKDAYS.map(day=>{const sel=scheduled.includes(day);const sc=schedules.find(s=>s.day===day);return <button key={day} onClick={()=>click(day)} style={{border:sel?"2px solid #c17b3f":"1px solid #e0dbd0",borderRadius:8,padding:"5px 12px",fontSize:12,cursor:"pointer",fontFamily:"inherit",background:sel?"#fff3e0":"white",color:sel?"#c17b3f":"#555",fontWeight:sel?600:400}}>{day}{sc&&<span style={{fontSize:10,display:"block",color:"#888",fontWeight:400}}>{sc.from}–{sc.to}</span>}</button>})}
+    </div>
+    {openDay&&<div style={{background:"#fff8f0",border:"1px solid #f0c08a",borderRadius:10,padding:"12px 14px",marginBottom:8}}>
+      <div style={{fontSize:12,fontWeight:600,color:"#c17b3f",marginBottom:8}}>שעות ל{openDay}</div>
+      <div style={{display:"flex",gap:10,alignItems:"flex-end"}}>
+        <div style={{flex:1}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>התחלה</div><input type="time" value={tempFrom} onChange={e=>setTempFrom(e.target.value)} style={{...iStyle,width:"100%"}}/></div>
+        <div style={{flex:1}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>סיום</div><input type="time" value={tempTo} onChange={e=>setTempTo(e.target.value)} style={{...iStyle,width:"100%"}}/></div>
+        <button onClick={()=>confirm(openDay)} style={{background:"#c17b3f",color:"white",border:"none",borderRadius:8,padding:"8px 14px",fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>אישור</button>
+        <button onClick={()=>setOpenDay(null)} style={{background:"none",border:"1px solid #ddd",borderRadius:8,padding:"8px 12px",fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>✕</button>
+      </div>
+    </div>}
+  </div>;
+}
+
+function ConsSelector({cons,consOther,onChangeCons,onChangeOther}){
+  const[inp,setInp]=useState("");
+  const toggle=opt=>cons.includes(opt)?onChangeCons(cons.filter(c=>c!==opt)):onChangeCons([...cons,opt]);
+  const hasOther=cons.includes("אחר");
+  const otherTags=(()=>{try{return JSON.parse(consOther||"[]")}catch{return[]}})();
+  const setOtherTags=t=>onChangeOther(JSON.stringify(t));
+  const add=()=>{const v=inp.trim();if(!v)return;setOtherTags([...otherTags,v]);setInp("");};
+  const allTags=[...cons.filter(c=>c!=="אחר").map(c=>({label:c,onRemove:()=>toggle(c)})),...otherTags.map((t,i)=>({label:t,onRemove:()=>setOtherTags(otherTags.filter((_,j)=>j!==i))}))];
+  return <div style={{marginBottom:10}}>
+    <div style={{fontSize:11,color:"#c62828",marginBottom:6,fontWeight:600}}>❌ חסרונות</div>
+    <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:8}}>{CONS_OPTIONS.map(opt=>{const sel=cons.includes(opt);return <button key={opt} onClick={()=>toggle(opt)} style={{border:sel?"2px solid #c62828":"1px solid #e0dbd0",borderRadius:8,padding:"5px 12px",fontSize:12,cursor:"pointer",fontFamily:"inherit",background:sel?"#fce4ec":"white",color:sel?"#c62828":"#555",fontWeight:sel?600:400}}>{opt}</button>})}</div>
+    {allTags.length>0&&<div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:8}}>{allTags.map((t,i)=><span key={i} style={{background:"#fce4ec",color:"#c62828",borderRadius:6,padding:"3px 10px",fontSize:12,display:"flex",alignItems:"center",gap:4}}>{t.label}<span onClick={t.onRemove} style={{cursor:"pointer",fontWeight:700,fontSize:14,lineHeight:1}}>×</span></span>)}</div>}
+    {hasOther&&<div style={{display:"flex",gap:8}}><input value={inp} onChange={e=>setInp(e.target.value)} onKeyDown={e=>e.key==="Enter"&&add()} placeholder="הקלידי חיסרון ולחצי Enter..." style={{...iStyle,flex:1}}/><button onClick={add} style={{background:"#c62828",color:"white",border:"none",borderRadius:8,padding:"7px 14px",fontSize:13,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>הוסיפי</button></div>}
+  </div>;
+}
+
+function CheckboxGroup({checks,onChange}){
+  const toggle=opt=>checks.includes(opt)?onChange(checks.filter(c=>c!==opt)):onChange([...checks,opt]);
+  return <div style={{marginBottom:10}}>
+    <div style={{fontSize:11,color:"#555",marginBottom:6,fontWeight:600}}>דגשים שצויינו</div>
+    <div style={{display:"flex",flexDirection:"column",gap:6}}>{CHECKBOXES.map(opt=><label key={opt} style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:13}}><input type="checkbox" checked={checks.includes(opt)} onChange={()=>toggle(opt)} style={{width:15,height:15,accentColor:"#c17b3f",cursor:"pointer"}}/>{opt}</label>)}</div>
+  </div>;
+}
+
+function LeadModal({lead,onSave,onClose,onDelete}){
+  const[form,setForm]=useState({...lead});
+  const upd=(id,val)=>setForm(f=>({...f,[id]:val}));
+  const p={form,onChange:upd};
+  const needsSchedule=STATUS_NEEDS_SCHEDULE.includes(form.status);
+  const schedLabel=form.status==="נקבעה שיחת טלפון"?"היכרות טלפונית":"פגישה";
+  const ear=calcEarnings(form);
+  const daysCount=form.daySchedules?.length||0;
+  return <div onClick={e=>e.target===e.currentTarget&&onClose()} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:200}}>
+    <div style={{background:"white",borderRadius:16,padding:"1.8rem",width:560,maxWidth:"96vw",direction:"rtl",maxHeight:"92vh",overflowY:"auto"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+        <h2 style={{fontSize:17,fontWeight:600,margin:0}}>{form.name||"ליד חדש"}</h2>
+        <button onClick={onClose} style={{background:"none",border:"none",fontSize:20,cursor:"pointer",color:"#aaa"}}>✕</button>
+      </div>
+      <Sec>1 · פרטים</Sec>
+      <F label="שם" id="name" placeholder="שם המשפחה / איש הקשר" {...p}/>
+      <F label="מקור" id="source" placeholder="פייסבוק, המלצה..." {...p}/>
+      <div style={{marginBottom:10}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>סטטוס</div><select value={form.status} onChange={e=>upd("status",e.target.value)} style={iStyle}>{STATUSES.map(o=><option key={o}>{o}</option>)}</select></div>
+      <Sec>4 · כתובת</Sec>
+      <F label="כתובת" id="address" placeholder="רחוב, מספר, קומה, דירה" {...p}/>
+      <Sec>5 · פרטי משרה</Sec>
+      <G2>
+        <div style={{marginBottom:10}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>סוג משרה</div><select value={form.type} onChange={e=>upd("type",e.target.value)} style={iStyle}><option value="שעתי">שעתי</option><option value="גלובאלי">גלובאלי</option><option value="מזדמן">מזדמן</option></select></div>
+        <F label="שם וגיל התינוק" id="childAge" placeholder="רון, 3 חודשים" {...p}/>
+      </G2>
+      <DayScheduler schedules={form.daySchedules||[]} onChange={ds=>upd("daySchedules",ds)}/>
+      <G3>
+        <div style={{marginBottom:10}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>מספר ימים בשבוע</div><div style={{...iStyle,background:"#f0f0f0",display:"flex",alignItems:"center",fontSize:13,color:daysCount>0?"#1a1a1a":"#888"}}>{daysCount>0?`${daysCount} ימים`:"אוטומטי"}</div></div>
+        <F label="תעריף לשעה (₪)" id="hourlyRate" placeholder="65" {...p}/>
+        <div style={{marginBottom:10}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>שכר חודשי משוער</div><div style={{...iStyle,background:ear.monthly>0?"#f0faf4":"#f0f0f0",display:"flex",alignItems:"center",fontSize:13,fontWeight:700,color:ear.monthly>0?"#2e7d32":"#888"}}>{ear.monthly>0?`₪${ear.monthly.toLocaleString()}`:"—"}</div></div>
+      </G3>
+      {needsSchedule&&<><Sec color="#6a1b9a">6 · {schedLabel}</Sec><G3>
+        <div style={{marginBottom:10}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>יום</div><select value={form.scheduleDay} onChange={e=>upd("scheduleDay",e.target.value)} style={iStyle}><option value="">בחרי</option>{WEEKDAYS.map(d=><option key={d}>{d}</option>)}</select></div>
+        <F label="תאריך" id="scheduleDate" type="date" {...p}/>
+        <F label="שעה" id="scheduleTime" type="time" {...p}/>
+      </G3></>}
+      <Sec color="#c62828">7 · חסרונות</Sec>
+      <ConsSelector cons={form.cons||[]} consOther={form.consOther||""} onChangeCons={v=>upd("cons",v)} onChangeOther={v=>upd("consOther",v)}/>
+      <Sec color="#2e7d32">8 · יתרונות</Sec>
+      <div style={{marginBottom:10}}><textarea value={form.pros||""} onChange={e=>upd("pros",e.target.value)} placeholder="שכונה מצוינת, ניו בורן..." style={{...iStyle,minHeight:52,resize:"vertical"}}/></div>
+      <Sec>9 · דגשים שצויינו</Sec>
+      <CheckboxGroup checks={form.checks||[]} onChange={v=>upd("checks",v)}/>
+      <Sec>10 · הערות</Sec>
+      <div style={{marginBottom:10}}><textarea value={form.notes||""} onChange={e=>upd("notes",e.target.value)} placeholder="חברים משותפים, הרושם מהשיחה..." style={{...iStyle,minHeight:60,resize:"vertical"}}/></div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:"1.2rem"}}>
+        <button onClick={()=>onDelete(lead.id)} style={{background:"none",border:"1px solid #fcc",borderRadius:8,padding:"8px 16px",fontSize:13,cursor:"pointer",color:"#c62828",fontFamily:"inherit"}}>🗑 מחיקה</button>
+        <div style={{display:"flex",gap:10}}>
+          <button onClick={onClose} style={{background:"none",border:"1px solid #ddd",borderRadius:8,padding:"8px 18px",fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>ביטול</button>
+          <button onClick={()=>onSave(form)} style={{background:"#1a1a1a",color:"white",border:"none",borderRadius:8,padding:"8px 18px",fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>שמירה</button>
+        </div>
+      </div>
+    </div>
+  </div>;
+}
+
+function LeadCard({lead,onClick}){
+  const ear=calcEarnings(lead);const st=statusStyle[lead.status]||statusStyle["חדש"];const sc=scoreStyle(lead.score);
+  const otherTags=(()=>{try{return JSON.parse(lead.consOther||"[]")}catch{return[]}})();
+  const allConsTags=[...(lead.cons||[]).filter(c=>c!=="אחר"),...otherTags];
+  return <div onClick={onClick} style={{background:"white",borderRadius:14,border:"1px solid #e8e4dc",padding:"1rem 1.2rem",cursor:"pointer",boxShadow:"0 1px 3px rgba(0,0,0,0.04)"}} onMouseEnter={e=>e.currentTarget.style.boxShadow="0 4px 16px rgba(0,0,0,0.1)"} onMouseLeave={e=>e.currentTarget.style.boxShadow="0 1px 3px rgba(0,0,0,0.04)"}>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
+      <div style={{fontWeight:600,fontSize:15}}>{lead.name||"ללא שם"}</div>
+      <div style={{display:"flex",gap:6,alignItems:"center"}}>
+        {lead.score&&<span style={{...sc,width:26,height:26,borderRadius:"50%",display:"inline-flex",alignItems:"center",justifyContent:"center",fontWeight:700,fontSize:12}}>{lead.score}</span>}
+        <span style={{...st,borderRadius:20,padding:"3px 10px",fontSize:11,fontWeight:600,whiteSpace:"nowrap"}}>{lead.status}</span>
+      </div>
+    </div>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"3px 12px",fontSize:12,color:"#555",marginBottom:8}}>
+      {lead.address&&<div>📍 {lead.address}</div>}
+      {lead.childAge&&<div>👶 {lead.childAge}</div>}
+      {(lead.daySchedules||[]).length>0&&<div>📅 {lead.daySchedules.map(d=>d.day).join(", ")}</div>}
+      {lead.scheduleDate&&<div>🗓 {lead.scheduleDate}</div>}
+    </div>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+      <span style={{background:lead.type==="גלובאלי"?"#1a1a2e":lead.type==="מזדמן"?"#f3e5f5":"#e8eaf6",color:lead.type==="גלובאלי"?"#a5b4fc":lead.type==="מזדמן"?"#6a1b9a":"#283593",borderRadius:6,padding:"2px 9px",fontSize:11,fontWeight:600}}>{lead.type}</span>
+      {ear.monthly>0&&<span style={{fontWeight:700,color:"#2e7d32",fontSize:13}}>₪{ear.monthly.toLocaleString()}<span style={{fontWeight:400,fontSize:10,color:"#888",marginRight:3}}>/חודש</span></span>}
+    </div>
+    {lead.pros&&<div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:4}}>{lead.pros.split(/[,،\n]/).map(s=>s.trim()).filter(Boolean).map((p,i)=><span key={i} style={{background:"#e8f5e9",color:"#2e7d32",borderRadius:5,padding:"1px 7px",fontSize:10}}>✓ {p}</span>)}</div>}
+    {allConsTags.length>0&&<div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:4}}>{allConsTags.map((c,i)=><span key={i} style={{background:"#fce4ec",color:"#c62828",borderRadius:5,padding:"1px 7px",fontSize:10}}>{c}</span>)}</div>}
+    {(lead.checks||[]).length>0&&<div style={{display:"flex",flexWrap:"wrap",gap:4}}>{lead.checks.map((c,i)=><span key={i} style={{background:"#fff8e1",color:"#f57f17",borderRadius:5,padding:"1px 7px",fontSize:10}}>! {c}</span>)}</div>}
+  </div>;
+}
+
+function ClientModal({client,onSave,onClose,onDelete}){
+  const[form,setForm]=useState({...client,shift:client.shift||[]});
+  const upd=(id,val)=>setForm(f=>({...f,[id]:val}));
+  const p={form,onChange:upd};
+  const toggleResp=r=>{const cur=form.responsibilities||[];upd("responsibilities",cur.includes(r)?cur.filter(x=>x!==r):[...cur,r]);};
+  const toggleShift=s=>{const cur=Array.isArray(form.shift)?form.shift:(form.shift?[form.shift]:[]);upd("shift",cur.includes(s)?cur.filter(x=>x!==s):[...cur,s]);};
+  const rate=parseFloat(form.hourlyRate)||0;
+  const hpw=parseFloat(calcEarnings(form).hoursPerWeek)||0;
+  const isGlobal=form.payModel==="גלובאלי";
+  const calcMonthly=isGlobal?Math.round(hpw*4.33*rate):Math.round(hpw*4*rate);
+  const monthly=parseFloat(form.manualSalary)||calcMonthly;
+  return <div onClick={e=>e.target===e.currentTarget&&onClose()} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:200}}>
+    <div style={{background:"white",borderRadius:16,padding:"1.8rem",width:560,maxWidth:"96vw",direction:"rtl",maxHeight:"92vh",overflowY:"auto"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+        <h2 style={{fontSize:17,fontWeight:600,margin:0}}>{form.name||"לקוח קיים"}</h2>
+        <button onClick={onClose} style={{background:"none",border:"none",fontSize:20,cursor:"pointer",color:"#aaa"}}>✕</button>
+      </div>
+      <Sec>1 · שם</Sec><F label="שם המשפחה" id="name" placeholder="משפחת לוי" {...p}/>
+      <Sec>2 · ילדים וסוג משרה</Sec>
+      <G2>
+        <div style={{marginBottom:10}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>מספר ילדים</div><select value={form.childrenCount||""} onChange={e=>upd("childrenCount",e.target.value)} style={iStyle}><option value="">בחרי</option>{[1,2,3,4,5].map(n=><option key={n} value={n}>{n}</option>)}</select></div>
+        <div style={{marginBottom:10}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>סוג משרה</div><select value={form.type||"שעתי"} onChange={e=>upd("type",e.target.value)} style={iStyle}><option value="שעתי">שעתי</option><option value="גלובאלי">גלובאלי</option><option value="מזדמן">מזדמן</option></select></div>
+      </G2>
+      <Sec>3 · ימים ושעות</Sec>
+      <DayScheduler schedules={form.daySchedules||[]} onChange={ds=>upd("daySchedules",ds)}/>
+      <Sec>4 · סוג משמרת (בחירה מרובה)</Sec>
+      <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:10}}>
+        {CLIENT_SHIFT.map(s=>{const shifts=Array.isArray(form.shift)?form.shift:(form.shift?[form.shift]:[]);const sel=shifts.includes(s);return <button key={s} onClick={()=>toggleShift(s)} style={{border:sel?"2px solid #c17b3f":"1px solid #e0dbd0",borderRadius:8,padding:"7px 16px",fontSize:13,cursor:"pointer",background:sel?"#fff3e0":"white",color:sel?"#c17b3f":"#555",fontWeight:sel?600:400,fontFamily:"inherit"}}>{sel?"✓ ":""}{s}</button>})}
+      </div>
+      <Sec>5 · תחומי אחריות</Sec>
+      <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:10}}>
+        {CLIENT_RESPONSIBILITIES.map(r=>{const sel=(form.responsibilities||[]).includes(r);return <button key={r} onClick={()=>toggleResp(r)} style={{border:sel?"2px solid #c17b3f":"1px solid #e0dbd0",borderRadius:8,padding:"6px 14px",fontSize:12,cursor:"pointer",background:sel?"#fff3e0":"white",color:sel?"#c17b3f":"#555",fontWeight:sel?600:400,fontFamily:"inherit"}}>{sel?"✓ ":""}{r}</button>})}
+      </div>
+      <Sec>6 · שכר</Sec>
+      <G2>
+        <div style={{marginBottom:10}}><div style={{fontSize:11,color:"#888",marginBottom:3}}>מודל שכר</div><select value={form.payModel||"שעתי"} onChange={e=>upd("payModel",e.target.value)} style={iStyle}>{CLIENT_PAY_MODEL.map(o=><option key={o}>{o}</option>)}</select></div>
+        <F label="תעריף לשעה (₪)" id="hourlyRate" placeholder="65" {...p}/>
+      </G2>
+      {calcMonthly>0&&<div style={{background:"#f0faf4",border:"1px solid #a5d6b0",borderRadius:8,padding:"8px 14px",marginBottom:10,fontSize:12,color:"#2e7d32"}}>חישוב: {hpw} שע׳/שבוע × {isGlobal?"4.33":"4"} × ₪{form.hourlyRate} = <strong>₪{calcMonthly.toLocaleString()}</strong></div>}
+      <div style={{marginBottom:10}}>
+        <div style={{fontSize:11,color:"#888",marginBottom:3}}>שכר חודשי{isGlobal?" גלובאלי":""} (הזיני ידנית לדריסת החישוב)</div>
+        <input value={form.manualSalary||""} onChange={e=>upd("manualSalary",e.target.value)} placeholder={calcMonthly>0?`חישוב אוטומטי: ₪${calcMonthly.toLocaleString()}`:"₪"} style={{...iStyle,fontWeight:form.manualSalary?700:400,color:form.manualSalary?"#2e7d32":"#888"}}/>
+      </div>
+      <Sec>הערות</Sec>
+      <div style={{marginBottom:10}}><textarea value={form.notes||""} onChange={e=>upd("notes",e.target.value)} placeholder="הערות חופשיות..." style={{...iStyle,minHeight:60,resize:"vertical"}}/></div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:"1.2rem"}}>
+        <button onClick={()=>onDelete(client.id)} style={{background:"none",border:"1px solid #fcc",borderRadius:8,padding:"8px 16px",fontSize:13,cursor:"pointer",color:"#c62828",fontFamily:"inherit"}}>🗑 מחיקה</button>
+        <div style={{display:"flex",gap:10}}>
+          <button onClick={onClose} style={{background:"none",border:"1px solid #ddd",borderRadius:8,padding:"8px 18px",fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>ביטול</button>
+          <button onClick={()=>onSave(form)} style={{background:"#2e7d32",color:"white",border:"none",borderRadius:8,padding:"8px 18px",fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>שמירה</button>
+        </div>
+      </div>
+    </div>
+  </div>;
+}
+
+function ClientCard({client,onClick}){
+  const rate=parseFloat(client.hourlyRate)||0;
+  const hpw=parseFloat(calcEarnings(client).hoursPerWeek)||0;
+  const isGlobal=client.payModel==="גלובאלי";
+  const calcM=isGlobal?Math.round(hpw*4.33*rate):Math.round(hpw*4*rate);
+  const monthly=parseFloat(client.manualSalary)||calcM;
+  const shifts=Array.isArray(client.shift)?client.shift:(client.shift?[client.shift]:[]);
+  return <div onClick={onClick} style={{background:"white",borderRadius:14,border:"2px solid #e8f5e9",padding:"1rem 1.2rem",cursor:"pointer",boxShadow:"0 1px 3px rgba(0,0,0,0.04)"}} onMouseEnter={e=>e.currentTarget.style.boxShadow="0 4px 16px rgba(0,0,0,0.1)"} onMouseLeave={e=>e.currentTarget.style.boxShadow="0 1px 3px rgba(0,0,0,0.04)"}>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
+      <div><div style={{fontWeight:600,fontSize:15}}>{client.name||"ללא שם"}</div>{client.childrenCount&&<div style={{fontSize:12,color:"#888"}}>{client.childrenCount} ילדים</div>}</div>
+      <span style={{background:"#e0f2f1",color:"#00695c",borderRadius:20,padding:"3px 10px",fontSize:11,fontWeight:600}}>לקוח קיים</span>
+    </div>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"3px 12px",fontSize:12,color:"#555",marginBottom:8}}>
+      {(client.daySchedules||[]).length>0&&<div>📅 {client.daySchedules.map(d=>d.day).join(", ")}</div>}
+      {shifts.length>0&&<div>🕐 {shifts.join(", ")}</div>}
+      {client.type&&<div>💼 {client.type}</div>}
+      {client.payModel&&<div>💳 {client.payModel}</div>}
+    </div>
+    {(client.responsibilities||[]).length>0&&<div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:8}}>{client.responsibilities.map((r,i)=><span key={i} style={{background:"#e8eaf6",color:"#283593",borderRadius:5,padding:"1px 7px",fontSize:10}}>✓ {r}</span>)}</div>}
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+      {client.hourlyRate&&<div style={{fontSize:12,color:"#555"}}>₪{client.hourlyRate}/שעה</div>}
+      {monthly>0&&<span style={{fontWeight:700,color:"#2e7d32",fontSize:13}}>₪{monthly.toLocaleString()}<span style={{fontWeight:400,fontSize:10,color:"#888",marginRight:3}}>/חודש</span></span>}
+    </div>
+  </div>;
+}
+
+function CombineTab({leads,clients}){
+  const allEntries=[
+    ...clients.map(c=>({...c,_type:"client",_label:c.name||"לקוח"})),
+    ...leads.map(l=>({...l,_type:"lead",_label:l.name||"ליד"})),
+  ];
+  const[selected,setSelected]=useState([]);
+  const toggle=id=>setSelected(s=>s.includes(id)?s.filter(x=>x!==id):[...s,id]);
+  const selectedEntries=allEntries.filter(e=>selected.includes(e.id));
+
+  const totalMonthly=selectedEntries.reduce((sum,e)=>{
+    const rate=parseFloat(e.hourlyRate)||0;
+    const hpw=parseFloat(calcEarnings(e).hoursPerWeek)||0;
+    const isGlobal=e.payModel==="גלובאלי"||e.type==="גלובאלי";
+    const calc=isGlobal?Math.round(hpw*4.33*rate):Math.round(hpw*4*rate);
+    return sum+(parseFloat(e.manualSalary)||calc);
+  },0);
+
+  const schedule={};
+  WEEKDAYS.forEach(d=>schedule[d]=[]);
+  selectedEntries.forEach((e,idx)=>{
+    (e.daySchedules||[]).forEach(ds=>{
+      if(schedule[ds.day]) schedule[ds.day].push({entry:e,from:ds.from,to:ds.to,idx});
+    });
+  });
+
+  const hasOverlap=day=>{
+    const slots=schedule[day];
+    for(let i=0;i<slots.length;i++)for(let j=i+1;j<slots.length;j++){
+      const a=slots[i],b=slots[j];
+      const m=t=>{const[h,min]=t.split(":").map(Number);return h*60+min;};
+      if(m(a.from)<m(b.to)&&m(b.from)<m(a.to))return true;
+    }
+    return false;
+  };
+
+  const START_HOUR=8,PX_PER_HOUR=36,TOTAL_HOURS=12;
+  const toPx=t=>{const[h,m]=t.split(":").map(Number);return((h+m/60)-START_HOUR)*PX_PER_HOUR;};
+  const hours=Array.from({length:TOTAL_HOURS+1},(_,i)=>i+START_HOUR);
+
+  return <div>
+    <div style={{background:"white",borderRadius:14,border:"1px solid #e8e4dc",padding:"1.2rem",marginBottom:16}}>
+      <div style={{fontSize:13,fontWeight:600,marginBottom:12,color:"#333"}}>בחרי לקוחות לסימולציה</div>
+      <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+        {allEntries.map((e,idx)=>{
+          const sel=selected.includes(e.id);
+          const color=COLORS[idx%COLORS.length];
+          const colorBg=COLORS_BG[idx%COLORS.length];
+          return <button key={e.id} onClick={()=>toggle(e.id)} style={{border:sel?`2px solid ${color}`:"1px solid #e0dbd0",borderRadius:10,padding:"7px 14px",fontSize:13,cursor:"pointer",fontFamily:"inherit",background:sel?colorBg:"white",color:"#333",fontWeight:sel?600:400,display:"flex",alignItems:"center",gap:6}}>
+            {sel&&<span style={{width:10,height:10,borderRadius:"50%",background:color,display:"inline-block"}}/>}
+            {e._label}
+            <span style={{fontSize:10,color:"#999",fontWeight:400}}>{e._type==="client"?"✅":"🎯"}</span>
+          </button>;
+        })}
+      </div>
+      {allEntries.length===0&&<div style={{color:"#bbb",fontSize:13}}>אין לקוחות עדיין</div>}
+    </div>
+
+    {selectedEntries.length>0&&<div style={{display:"flex",gap:10,marginBottom:16,flexWrap:"wrap"}}>
+      <div style={{background:"white",borderRadius:10,padding:"10px 18px",border:"1px solid #e8e4dc"}}>
+        <div style={{fontSize:20,fontWeight:600,color:"#c17b3f"}}>{selectedEntries.length}</div>
+        <div style={{fontSize:11,color:"#888"}}>משפחות</div>
+      </div>
+      <div style={{background:"white",borderRadius:10,padding:"10px 18px",border:"1px solid #e8e4dc"}}>
+        <div style={{fontSize:20,fontWeight:600,color:"#c17b3f"}}>{selectedEntries.reduce((s,e)=>s+parseFloat(calcEarnings(e).hoursPerWeek||0),0).toFixed(1)}</div>
+        <div style={{fontSize:11,color:"#888"}}>שעות/שבוע</div>
+      </div>
+      <div style={{background:"#f0faf4",borderRadius:10,padding:"10px 18px",border:"1px solid #a5d6b0"}}>
+        <div style={{fontSize:22,fontWeight:700,color:"#2e7d32"}}>₪{totalMonthly.toLocaleString()}</div>
+        <div style={{fontSize:11,color:"#555"}}>הכנסה חודשית משולבת</div>
+      </div>
+      {WEEKDAYS.some(d=>hasOverlap(d))&&<div style={{background:"#fce4ec",borderRadius:10,padding:"10px 18px",border:"1px solid #ef9a9a"}}>
+        <div style={{fontSize:13,fontWeight:600,color:"#b71c1c"}}>⚠️ חפיפה!</div>
+        <div style={{fontSize:11,color:"#c62828"}}>{WEEKDAYS.filter(d=>hasOverlap(d)).join(", ")}</div>
+      </div>}
+    </div>}
+
+    {selectedEntries.length>0&&<div style={{background:"white",borderRadius:14,border:"1px solid #e8e4dc",padding:"1.2rem",overflowX:"auto"}}>
+      <div style={{fontSize:13,fontWeight:600,marginBottom:12,color:"#333"}}>לוח שבועי</div>
+      <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:14}}>
+        {selectedEntries.map((e,idx)=><div key={e.id} style={{display:"flex",alignItems:"center",gap:5,fontSize:12}}>
+          <span style={{width:12,height:12,borderRadius:3,background:COLORS[idx%COLORS.length],display:"inline-block"}}/>
+          {e._label}
+        </div>)}
+      </div>
+      {[{label:"בוקר",color:"#5b9bd5",fromH:8,toH:15},{label:'אחה"צ',color:"#9b59b6",fromH:15,toH:20}].map(({label,color,fromH,toH},ti)=>{
+        const sectionHours=toH-fromH;
+        const sectionHeight=sectionHours*PX_PER_HOUR;
+        const sectionHoursList=Array.from({length:sectionHours+(fromH===8?0:1)},(_,i)=>fromH+i);
+        const sm=t=>{const[h,m]=t.split(":").map(Number);return h*60+m;};
+        return <div key={label} style={{marginBottom: ti===0?7:0}}>
+          <div style={{display:"grid",gridTemplateColumns:`90px repeat(${WEEKDAYS.length}, 1fr)`,gap:0,minWidth:640}}>
+            <div style={{position:"relative",height:sectionHeight}}>
+              <span style={{position:"absolute",top:4,right:2,fontSize:10,fontWeight:700,color,whiteSpace:"nowrap"}}>{label}</span>
+              {sectionHoursList.map(h=><div key={h} style={{position:"absolute",top:(h-fromH)*PX_PER_HOUR-7,left:28,fontSize:10,color:"#aaa"}}>{String(h).padStart(2,"0")}:00</div>)}
+            </div>
+            {WEEKDAYS.map((day,di)=>{
+              const slots=schedule[day].filter(s=>sm(s.from)<toH*60&&sm(s.to)>fromH*60);
+              const overlap=hasOverlap(day);
+              return <div key={day} style={{position:"relative",height:sectionHeight,borderRight:"1px solid #f0ece4",borderLeft:"1px solid #f0ece4",borderTop:"1px solid #ddd",borderBottom:ti===0?"1px solid #ddd":"none"}}>
+                {ti===0&&<div style={{position:"absolute",top:-18,width:"100%",textAlign:"center",fontSize:11,fontWeight:600,color:overlap?"#b71c1c":"#555"}}>{day}{overlap?" ⚠️":""}</div>}
+                {sectionHoursList.map(h=><div key={h} style={{position:"absolute",top:(h-fromH)*PX_PER_HOUR,width:"100%",borderTop:"1px solid #f5f2ed"}}/>)}
+                {slots.map((slot,si)=>{
+                  const clampedFrom=Math.max(sm(slot.from),fromH*60);
+                  const clampedTo=Math.min(sm(slot.to),toH*60);
+                  const top=(clampedFrom-fromH*60)/60*PX_PER_HOUR+4;
+                  const height=Math.max((clampedTo-clampedFrom)/60*PX_PER_HOUR-8,14);
+                  const w=slots.length>1?90/slots.length:90;const l=si*(90/slots.length)+5;
+                  const c=COLORS[slot.idx%COLORS.length];const bg=COLORS_BG[slot.idx%COLORS.length];
+                  return <div key={si} style={{position:"absolute",top,height,width:`${w}%`,left:`${l}%`,background:bg,border:`2px solid ${c}`,borderRadius:6,display:"flex",flexDirection:"column",justifyContent:"center",alignItems:"center",fontSize:10,color:"#333",fontWeight:600,padding:"2px 3px",overflow:"hidden"}}>
+                    <div style={{whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",width:"100%",textAlign:"center"}}>{slot.entry._label}</div>
+                    <div style={{fontSize:9,opacity:0.8}}>{slot.from}–{slot.to}</div>
+                  </div>;
+                })}
+              </div>;
+            })}
+          </div>
+        </div>;
+      })}
+    </div>}
+
+        {selectedEntries.length===0&&allEntries.length>0&&<div style={{textAlign:"center",padding:"3rem",color:"#bbb",fontSize:14}}>בחרי לקוחות מהרשימה למעלה כדי לראות את הלוח וההכנסה 📅</div>}
+  </div>;
+}
+
+function App(){
+  const[tab,setTab]=useState("leads");
+  const[leads,setLeadsRaw]=useState(()=>{try{const s=localStorage.getItem("nanny_leads");return s?JSON.parse(s):[]}catch{return[]}});
+  const[clients,setClientsRaw]=useState(()=>{try{const s=localStorage.getItem("nanny_clients");return s?JSON.parse(s):[]}catch{return[]}});
+  const[filterStatus,setFilterStatus]=useState("");const[filterType,setFilterType]=useState("");const[search,setSearch]=useState("");
+  const[openLead,setOpenLead]=useState(null);const[openClient,setOpenClient]=useState(null);
+  const setLeads=u=>setLeadsRaw(p=>{const n=typeof u==="function"?u(p):u;try{localStorage.setItem("nanny_leads",JSON.stringify(n));window.saveToCloud&&window.saveToCloud("leads",n);}catch{};return n;});
+  const setClients=u=>setClientsRaw(p=>{const n=typeof u==="function"?u(p):u;try{localStorage.setItem("nanny_clients",JSON.stringify(n));window.saveToCloud&&window.saveToCloud("clients",n);}catch{};return n;});
+  const addLead=()=>{const l=emptyLead();setLeads(ls=>[l,...ls]);setOpenLead(l);};
+  const saveLead=u=>{setLeads(ls=>ls.map(l=>l.id===u.id?u:l));setOpenLead(null);};
+  const deleteLead=id=>{setLeads(ls=>ls.filter(l=>l.id!==id));setOpenLead(null);};
+  const addClient=()=>{const c=emptyClient();setClients(cs=>[c,...cs]);setOpenClient(c);};
+  const saveClient=u=>{setClients(cs=>cs.map(c=>c.id===u.id?u:c));setOpenClient(null);};
+  const deleteClient=id=>{setClients(cs=>cs.filter(c=>c.id!==id));setOpenClient(null);};
+  const totalMonthly=leads.reduce((s,l)=>s+calcEarnings(l).monthly,0);
+  const clientsMonthly=clients.reduce((s,c)=>{const r=parseFloat(c.hourlyRate)||0;const h=parseFloat(calcEarnings(c).hoursPerWeek)||0;const ig=c.payModel==="גלובאלי";const cm=ig?Math.round(h*4.33*r):Math.round(h*4*r);return s+(parseFloat(c.manualSalary)||cm);},0);
+  const filtered=leads.filter(l=>(!filterStatus||l.status===filterStatus)&&(!filterType||l.type===filterType)&&(!search||(l.name||"").includes(search)||(l.address||"").includes(search)));
+  const filteredClients=clients.filter(c=>!search||(c.name||"").includes(search));
+  const btnStyle={background:"white",border:"1px solid #e0dbd0",borderRadius:8,padding:"8px 14px",fontSize:13,fontFamily:"inherit",cursor:"pointer",color:"#444"};
+  return <div style={{direction:"rtl",fontFamily:"'Segoe UI',Arial,sans-serif",padding:"1.5rem",background:"#f5f3ee",minHeight:"100vh"}}>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:"1.2rem"}}>
+      <h1 style={{fontWeight:300,fontSize:24,margin:0}}>ניהול <span style={{fontWeight:600,color:"#c17b3f"}}>לקוחות</span></h1>
+      <span style={{fontSize:12,color:"#999"}}>נני — מרכז תל אביב</span>
+    </div>
+    <div style={{display:"flex",gap:0,marginBottom:"1.2rem",borderBottom:"2px solid #e8e4dc"}}>
+      {[["leads","לידים 🎯"],["clients","לקוחות קיימים ✅"],["combine","שילוב לקוחות 📅"]].map(([key,label])=>(
+        <button key={key} onClick={()=>setTab(key)} style={{background:"none",border:"none",borderBottom:tab===key?"2px solid #c17b3f":"2px solid transparent",marginBottom:-2,padding:"10px 20px",fontSize:14,cursor:"pointer",fontFamily:"inherit",color:tab===key?"#c17b3f":"#888",fontWeight:tab===key?600:400}}>{label}</button>
+      ))}
+    </div>
+    <div style={{display:"flex",gap:10,marginBottom:"1.2rem",flexWrap:"wrap"}}>
+      {(tab==="leads"?[["סה״כ לידים",leads.length],["ציון 7+",leads.filter(l=>parseInt(l.score)>=7).length],["פגישות",leads.filter(l=>l.status.includes("פגישה")).length],["גויסתי",leads.filter(l=>l.status==="גויסתי").length],["💰 פוטנציאל","₪"+totalMonthly.toLocaleString()]]:tab==="clients"?[["לקוחות פעילים",clients.length],["💰 הכנסה חודשית","₪"+clientsMonthly.toLocaleString()]]:[]).map(([lbl,val])=>(
+        <div key={lbl} style={{background:"white",borderRadius:10,padding:"10px 18px",border:"1px solid #e8e4dc"}}>
+          <div style={{fontSize:20,fontWeight:600,color:"#c17b3f",lineHeight:1}}>{val}</div>
+          <div style={{fontSize:11,color:"#888",marginTop:3}}>{lbl}</div>
+        </div>
+      ))}
+    </div>
+    {tab!=="combine"&&<div style={{display:"flex",gap:10,marginBottom:"1.2rem",flexWrap:"wrap",alignItems:"center"}}>
+      {tab==="leads"?<>
+        <button onClick={addLead} style={{background:"#1a1a1a",color:"white",border:"none",borderRadius:8,padding:"9px 18px",fontSize:14,cursor:"pointer",fontFamily:"inherit"}}>+ ליד חדש</button>
+        <select value={filterStatus} onChange={e=>setFilterStatus(e.target.value)} style={btnStyle}><option value="">כל הסטטוסים</option>{STATUSES.map(o=><option key={o}>{o}</option>)}</select>
+        <select value={filterType} onChange={e=>setFilterType(e.target.value)} style={btnStyle}><option value="">כל הסוגים</option><option value="שעתי">שעתי</option><option value="גלובאלי">גלובאלי</option><option value="מזדמן">מזדמן</option></select>
+      </>:<button onClick={addClient} style={{background:"#2e7d32",color:"white",border:"none",borderRadius:8,padding:"9px 18px",fontSize:14,cursor:"pointer",fontFamily:"inherit"}}>+ לקוח קיים</button>}
+      <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="חיפוש שם..." style={{...btnStyle,width:180}}/>
+    </div>}
+    {tab==="combine"?<CombineTab leads={leads} clients={clients}/>:tab==="leads"?(filtered.length===0?<div style={{textAlign:"center",padding:"4rem",color:"#bbb",fontSize:15}}>לחצי על "+ ליד חדש" כדי להתחיל 🎯</div>:<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill, minmax(280px, 1fr))",gap:14}}>{filtered.map(l=><LeadCard key={l.id} lead={l} onClick={()=>setOpenLead(l)}/>)}</div>):(filteredClients.length===0?<div style={{textAlign:"center",padding:"4rem",color:"#bbb",fontSize:15}}>לחצי על "+ לקוח קיים" ✅</div>:<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill, minmax(280px, 1fr))",gap:14}}>{filteredClients.map(c=><ClientCard key={c.id} client={c} onClick={()=>setOpenClient(c)}/>)}</div>)}
+    {openLead&&<LeadModal lead={leads.find(l=>l.id===openLead.id)||openLead} onSave={saveLead} onClose={()=>setOpenLead(null)} onDelete={deleteLead}/>}
+    {openClient&&<ClientModal client={clients.find(c=>c.id===openClient.id)||openClient} onSave={saveClient} onClose={()=>setOpenClient(null)} onDelete={deleteClient}/>}
+  </div>;
+}
+
+if (window.loadFromCloud) {
+    window.loadFromCloud(() => {
+      ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+    });
+  } else {
+    ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+  }
+</script>
+</body>
+</html>
