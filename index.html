@@ -480,132 +480,209 @@ const HEB_DAYS = ["ראשון","שני","שלישי","רביעי","חמישי","
 const HEB_MONTHS = ["ינואר","פברואר","מרץ","אפריל","מאי","יוני","יולי","אוגוסט","ספטמבר","אוקטובר","נובמבר","דצמבר"];
 
 function ScheduleTab({clients}) {
-  const[weekOffset,setWeekOffset]=useState(0);
-  const[entries,setEntriesRaw]=useState(()=>{
-    try{return JSON.parse(localStorage.getItem("nanny_schedule")||"{}");}catch{return{};}
-  });
+  const[monthOffset,setMonthOffset]=useState(0);
+  const[entries,setEntriesRaw]=useState(()=>{try{return JSON.parse(localStorage.getItem("nanny_schedule")||"{}");}catch{return{};}});
   const[openDay,setOpenDay]=useState(null);
   const[editEntry,setEditEntry]=useState({});
+  const[autoApply,setAutoApply]=useState({});// {clientId: true/false}
 
-  const setEntries=u=>{
-    setEntriesRaw(p=>{
-      const n=typeof u==="function"?u(p):u;
-      try{localStorage.setItem("nanny_schedule",JSON.stringify(n));
-        window.saveToCloud&&window.saveToCloud("schedule",n);}catch{};
-      return n;
+  const setEntries=u=>{setEntriesRaw(p=>{const n=typeof u==="function"?u(p):u;try{localStorage.setItem("nanny_schedule",JSON.stringify(n));window.saveToCloud&&window.saveToCloud("schedule",n);}catch{};return n;});};
+
+  const now=new Date();
+  const year=new Date(now.getFullYear(),now.getMonth()+monthOffset,1).getFullYear();
+  const month=new Date(now.getFullYear(),now.getMonth()+monthOffset,1).getMonth();
+  const firstDay=new Date(year,month,1);
+  const daysInMonth=new Date(year,month+1,0).getDate();
+  const startDow=firstDay.getDay();
+
+  const dateKey=(y,m,d)=>`${y}-${String(m+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+  const getClient=id=>clients.find(c=>c.id===id||c.id===parseInt(id));
+  const iStyle2={width:"100%",border:"1px solid #e0dbd0",borderRadius:7,padding:"7px 10px",fontSize:13,fontFamily:"inherit",background:"#fafafa",outline:"none",boxSizing:"border-box"};
+
+  // Auto-apply: fill all matching days for a client
+  const applyClientToMonth=(clientId)=>{
+    const c=getClient(clientId);
+    if(!c)return;
+    const scheduledDays=(c.daySchedules||[]).map(ds=>ds.day);
+    const newEntries={...entries};
+    for(let d=1;d<=daysInMonth;d++){
+      const date=new Date(year,month,d);
+      const dayName=HEB_DAYS[date.getDay()];
+      if(scheduledDays.includes(dayName)){
+        const k=dateKey(year,month,d);
+        const sched=(c.daySchedules||[]).find(ds=>ds.day===dayName);
+        let autoAmt=0;
+        if(sched&&c.payModel!=="גלובאלי"){
+          const r=parseFloat(c.hourlyRate)||0;
+          const[fh,fm]=sched.from.split(":").map(Number);
+          const[th,tm]=sched.to.split(":").map(Number);
+          autoAmt=Math.round(((th+tm/60)-(fh+fm/60))*r);
+        }
+        if(!newEntries[k]){
+          newEntries[k]={clientId:String(clientId),amount:autoAmt?String(autoAmt):"",paid:"",cooking:""};
+        }
+      }
+    }
+    setEntries(newEntries);
+  };
+
+  const removeClientFromMonth=(clientId)=>{
+    const newEntries={};
+    Object.keys(entries).forEach(k=>{
+      if(entries[k].clientId!==String(clientId))newEntries[k]=entries[k];
     });
+    setEntries(newEntries);
   };
 
-  const dates=getWeekDates(weekOffset);
-  const weekLabel=()=>{
-    const s=dates[0],e=dates[6];
-    return `${s.getDate()} ${HEB_MONTHS[s.getMonth()]} – ${e.getDate()} ${HEB_MONTHS[e.getMonth()]} ${e.getFullYear()}`;
-  };
-
-  const dateKey=d=>d.toISOString().split("T")[0];
+  // Monthly totals
+  const monthEntries=Object.entries(entries).filter(([k])=>k.startsWith(`${year}-${String(month+1).padStart(2,"0")}`));
+  const totalExpected=monthEntries.reduce((s,[,e])=>{const c=getClient(e.clientId);if(!c||c.payModel==="גלובאלי")return s;return s+(parseFloat(e.amount)||0);},0);
+  const totalPaid=monthEntries.reduce((s,[,e])=>{const c=getClient(e.clientId);if(!c||c.payModel==="גלובאלי")return s;return s+(parseFloat(e.paid)||0);},0);
+  // Also add global clients monthly salary
+  const globalMonthly=clients.filter(c=>c.payModel==="גלובאלי").reduce((s,c)=>{const r=parseFloat(c.hourlyRate)||0;const h=parseFloat(calcEarnings(c).hoursPerWeek)||0;const cm=Math.round(h*4.33*r);return s+(parseFloat(c.manualSalary)||cm);},0);
+  const totalAll=totalExpected+globalMonthly;
+  const totalUnpaid=totalExpected-totalPaid;
 
   const openEntry=d=>{
-    const k=dateKey(d);
+    const k=dateKey(year,month,d);
     setEditEntry(entries[k]||{clientId:"",amount:"",paid:"",cooking:""});
-    setOpenDay(d);
+    setOpenDay({d,k,date:new Date(year,month,d)});
   };
 
   const saveEntry=()=>{
-    const k=dateKey(openDay);
-    setEntries(e=>({...e,[k]:editEntry}));
+    setEntries(e=>({...e,[openDay.k]:editEntry}));
     setOpenDay(null);
   };
 
-  const getClient=id=>clients.find(c=>c.id===id||c.id===parseInt(id));
-
-  const iStyle2={width:"100%",border:"1px solid #e0dbd0",borderRadius:7,padding:"7px 10px",fontSize:13,fontFamily:"inherit",background:"#fafafa",outline:"none",boxSizing:"border-box"};
+  const cells=[];
+  for(let i=0;i<startDow;i++)cells.push(null);
+  for(let d=1;d<=daysInMonth;d++)cells.push(d);
 
   return <div>
-    {/* Week navigation */}
-    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16,background:"white",borderRadius:12,padding:"12px 16px",border:"1px solid #e8e4dc"}}>
-      <button onClick={()=>setWeekOffset(w=>w-1)} style={{background:"none",border:"1px solid #ddd",borderRadius:8,padding:"6px 14px",fontSize:18,cursor:"pointer"}}>‹</button>
+    {/* Month nav */}
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12,background:"white",borderRadius:12,padding:"12px 16px",border:"1px solid #e8e4dc"}}>
+      <button onClick={()=>setMonthOffset(m=>m-1)} style={{background:"none",border:"1px solid #ddd",borderRadius:8,padding:"6px 14px",fontSize:18,cursor:"pointer"}}>‹</button>
       <div style={{textAlign:"center"}}>
-        <div style={{fontSize:14,fontWeight:600,color:"#333"}}>{weekLabel()}</div>
-        {weekOffset===0&&<div style={{fontSize:11,color:"#c17b3f"}}>השבוע הנוכחי</div>}
-        {weekOffset!==0&&<button onClick={()=>setWeekOffset(0)} style={{fontSize:11,color:"#c17b3f",background:"none",border:"none",cursor:"pointer",textDecoration:"underline"}}>חזרה להיום</button>}
+        <div style={{fontSize:15,fontWeight:600,color:"#333"}}>{HEB_MONTHS[month]} {year}</div>
+        {monthOffset===0&&<div style={{fontSize:11,color:"#c17b3f"}}>החודש הנוכחי</div>}
+        {monthOffset!==0&&<button onClick={()=>setMonthOffset(0)} style={{fontSize:11,color:"#c17b3f",background:"none",border:"none",cursor:"pointer",textDecoration:"underline"}}>חזרה להיום</button>}
       </div>
-      <button onClick={()=>setWeekOffset(w=>w+1)} style={{background:"none",border:"1px solid #ddd",borderRadius:8,padding:"6px 14px",fontSize:18,cursor:"pointer"}}>›</button>
+      <button onClick={()=>setMonthOffset(m=>m+1)} style={{background:"none",border:"1px solid #ddd",borderRadius:8,padding:"6px 14px",fontSize:18,cursor:"pointer"}}>›</button>
     </div>
 
-    {/* Day cards */}
-    <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:8}}>
-      {dates.map((d,i)=>{
-        const k=dateKey(d);
-        const entry=entries[k]||{};
-        const holiday=isHoliday(d);
-        const isToday=dateKey(d)===dateKey(new Date());
-        const client=entry.clientId?getClient(entry.clientId):null;
-        const isGlobal=client&&client.payModel==="גלובאלי";
-        const hasCooking=client&&(client.responsibilities||[]).includes("בישול");
-        const paidNum=parseFloat(entry.paid)||0;
-        const amountNum=parseFloat(entry.amount)||0;
-        const balance=amountNum-paidNum;
-        const isShabat=i===6;
+    {/* Monthly summary */}
+    <div style={{display:"flex",gap:10,marginBottom:12,flexWrap:"wrap"}}>
+      <div style={{background:"white",borderRadius:10,padding:"10px 18px",border:"1px solid #e8e4dc"}}>
+        <div style={{fontSize:18,fontWeight:700,color:"#c17b3f"}}>₪{totalAll.toLocaleString()}</div>
+        <div style={{fontSize:11,color:"#888"}}>שכר חודשי כולל</div>
+      </div>
+      <div style={{background:"#f0faf4",borderRadius:10,padding:"10px 18px",border:"1px solid #a5d6b0"}}>
+        <div style={{fontSize:18,fontWeight:700,color:"#2e7d32"}}>₪{totalPaid.toLocaleString()}</div>
+        <div style={{fontSize:11,color:"#555"}}>שולם</div>
+      </div>
+      {totalUnpaid>0&&<div style={{background:"#fce4ec",borderRadius:10,padding:"10px 18px",border:"1px solid #ef9a9a"}}>
+        <div style={{fontSize:18,fontWeight:700,color:"#c62828"}}>₪{totalUnpaid.toLocaleString()}</div>
+        <div style={{fontSize:11,color:"#c62828"}}>טרם שולם</div>
+      </div>}
+    </div>
 
-        return <div key={k} onClick={()=>!isShabat&&openEntry(d)} style={{
-          background:"white",borderRadius:12,border:isToday?"2px solid #c17b3f":"1px solid #e8e4dc",
-          padding:"10px 8px",cursor:isShabat?"default":"pointer",minHeight:120,position:"relative",
-          opacity:isShabat?0.5:1,
-          boxShadow:isToday?"0 2px 8px rgba(193,123,63,0.15)":"none",
-          transition:"box-shadow 0.15s",
-        }}
-        onMouseEnter={e=>{if(!isShabat)e.currentTarget.style.boxShadow="0 4px 12px rgba(0,0,0,0.1)";}}
-        onMouseLeave={e=>{e.currentTarget.style.boxShadow=isToday?"0 2px 8px rgba(193,123,63,0.15)":"none";}}>
-          {/* Holiday overlay */}
-          {holiday&&<div style={{position:"absolute",inset:0,background:"rgba(255,255,255,0.6)",borderRadius:12,zIndex:1,display:"flex",alignItems:"center",justifyContent:"center"}}>
-            <span style={{fontSize:10,color:"#888",fontWeight:600}}>חג</span>
-          </div>}
-          <div style={{fontSize:11,fontWeight:700,color:isToday?"#c17b3f":"#555",marginBottom:2}}>{HEB_DAYS[i]}</div>
-          <div style={{fontSize:10,color:"#aaa",marginBottom:8}}>{d.getDate()}/{d.getMonth()+1}</div>
-          {client&&<div style={{fontSize:11,fontWeight:600,color:"#333",marginBottom:4,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{client.name}</div>}
-          {!isGlobal&&amountNum>0&&<div style={{fontSize:12,fontWeight:700,color:balance<=0?"#2e7d32":"#c62828"}}>
-            {balance<=0?"✓ ":""}₪{paidNum>0?paidNum.toLocaleString():amountNum.toLocaleString()}
-            {balance>0&&<span style={{fontSize:10,display:"block",color:"#c62828"}}>יתרה: ₪{balance.toLocaleString()}</span>}
-          </div>}
-          {isGlobal&&hasCooking&&entry.cooking&&<div style={{fontSize:10,color:"#666",marginTop:4,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>🍳 {entry.cooking}</div>}
-          {!entry.clientId&&!isShabat&&<div style={{fontSize:10,color:"#ddd",marginTop:8}}>+ הוסיפי</div>}
-        </div>;
-      })}
+    {/* Auto-apply clients */}
+    <div style={{background:"white",borderRadius:12,padding:"12px 16px",border:"1px solid #e8e4dc",marginBottom:12}}>
+      <div style={{fontSize:12,fontWeight:600,color:"#555",marginBottom:8}}>שיבוץ אוטומטי לפי ימים קבועים</div>
+      <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+        {clients.map(c=>{
+          const isApplied=Object.values(entries).some(e=>e.clientId===String(c.id)&&Object.keys(entries).some(k=>k.startsWith(`${year}-${String(month+1).padStart(2,"0")}`)));
+          return <div key={c.id} style={{display:"flex",alignItems:"center",gap:6,background:isApplied?"#fff3e0":"#f9f9f9",borderRadius:8,padding:"5px 10px",border:isApplied?"1px solid #c17b3f":"1px solid #e0dbd0"}}>
+            <span style={{fontSize:12,fontWeight:500}}>{c.name}</span>
+            {!isApplied
+              ?<button onClick={()=>applyClientToMonth(c.id)} style={{fontSize:11,background:"#c17b3f",color:"white",border:"none",borderRadius:5,padding:"2px 8px",cursor:"pointer",fontFamily:"inherit"}}>החל</button>
+              :<button onClick={()=>removeClientFromMonth(c.id)} style={{fontSize:11,background:"none",color:"#c62828",border:"1px solid #fcc",borderRadius:5,padding:"2px 8px",cursor:"pointer",fontFamily:"inherit"}}>הסר</button>
+            }
+          </div>;
+        })}
+      </div>
+    </div>
+
+    {/* Calendar */}
+    <div style={{background:"white",borderRadius:14,border:"1px solid #e8e4dc",padding:"1rem",overflow:"hidden"}}>
+      {/* Day headers */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:2,marginBottom:4}}>
+        {HEB_DAYS.map(d=><div key={d} style={{textAlign:"center",fontSize:11,fontWeight:600,color:"#888",padding:"4px"}}>{d}</div>)}
+      </div>
+      {/* Day cells */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:2}}>
+        {cells.map((d,i)=>{
+          if(!d)return <div key={i}/>;
+          const k=dateKey(year,month,d);
+          const entry=entries[k]||{};
+          const holiday=isHoliday(new Date(year,month,d));
+          const isShabat=new Date(year,month,d).getDay()===6;
+          const isToday=new Date().getDate()===d&&new Date().getMonth()===month&&new Date().getFullYear()===year;
+          const client=entry.clientId?getClient(entry.clientId):null;
+          const isGlobal=client&&client.payModel==="גלובאלי";
+          const hasCooking=client&&(client.responsibilities||[]).includes("בישול");
+          const amtNum=parseFloat(entry.amount)||0;
+          const paidNum=parseFloat(entry.paid)||0;
+          const balance=amtNum-paidNum;
+          const fullyPaid=amtNum>0&&balance<=0;
+          const partPaid=amtNum>0&&paidNum>0&&balance>0;
+          const notPaid=amtNum>0&&paidNum===0;
+
+          return <div key={k} onClick={()=>!isShabat&&openEntry(d)}
+            style={{minHeight:72,borderRadius:8,border:isToday?"2px solid #c17b3f":"1px solid #f0ece4",
+              padding:"4px 5px",cursor:isShabat?"default":"pointer",
+              background:holiday||isShabat?"rgba(255,255,255,0.7)":fullyPaid?"#f0faf4":notPaid&&amtNum>0?"#fce4ec":partPaid?"#fff8e1":"white",
+              position:"relative",transition:"box-shadow 0.1s"}}
+            onMouseEnter={e=>{if(!isShabat)e.currentTarget.style.boxShadow="0 2px 8px rgba(0,0,0,0.1)";}}
+            onMouseLeave={e=>e.currentTarget.style.boxShadow="none"}>
+            {holiday&&<div style={{position:"absolute",inset:0,background:"rgba(255,255,255,0.55)",borderRadius:8,zIndex:1,display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,color:"#aaa",fontWeight:600}}>חג</div>}
+            <div style={{fontSize:11,fontWeight:isToday?700:400,color:isToday?"#c17b3f":isShabat?"#ccc":"#555"}}>{d}</div>
+            {client&&<div style={{fontSize:10,fontWeight:600,color:"#333",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",marginTop:1}}>{client.name}</div>}
+            {!isGlobal&&amtNum>0&&<div style={{fontSize:10,fontWeight:700,color:fullyPaid?"#2e7d32":notPaid?"#c62828":"#f57f17",marginTop:1}}>
+              {fullyPaid?"✓ ":""}{paidNum>0&&!fullyPaid?`${paidNum.toLocaleString()}/${amtNum.toLocaleString()}`:`₪${amtNum.toLocaleString()}`}
+            </div>}
+            {isGlobal&&hasCooking&&entry.cooking&&<div style={{fontSize:9,color:"#888",marginTop:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>🍳</div>}
+            {!entry.clientId&&!isShabat&&!holiday&&<div style={{fontSize:9,color:"#ddd",marginTop:4}}>+</div>}
+          </div>;
+        })}
+      </div>
     </div>
 
     {/* Day modal */}
     {openDay&&<div onClick={e=>e.target===e.currentTarget&&setOpenDay(null)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:200}}>
-      <div style={{background:"white",borderRadius:16,padding:"1.8rem",width:400,maxWidth:"96vw",direction:"rtl"}}>
+      <div style={{background:"white",borderRadius:16,padding:"1.8rem",width:400,maxWidth:"96vw",direction:"rtl",maxHeight:"92vh",overflowY:"auto"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
-          <h3 style={{fontSize:16,fontWeight:600,margin:0}}>{HEB_DAYS[openDay.getDay()]} {openDay.getDate()}/{openDay.getMonth()+1}</h3>
+          <h3 style={{fontSize:16,fontWeight:600,margin:0}}>{HEB_DAYS[openDay.date.getDay()]} {openDay.d}/{month+1}</h3>
           <button onClick={()=>setOpenDay(null)} style={{background:"none",border:"none",fontSize:20,cursor:"pointer",color:"#aaa"}}>✕</button>
         </div>
-
         <div style={{marginBottom:10}}>
           <div style={{fontSize:11,color:"#888",marginBottom:3}}>לקוח</div>
-          <select value={editEntry.clientId||""} onChange={e=>{const newClientId=e.target.value;const c2=clients.find(cc=>cc.id===newClientId||cc.id===parseInt(newClientId));const dayName2=HEB_DAYS[openDay.getDay()];const sched2=c2&&(c2.daySchedules||[]).find(ds=>ds.day===dayName2);let auto2=0;if(sched2&&c2&&c2.payModel!=="גלובאלי"){const r2=parseFloat(c2.hourlyRate)||0;const[fh2,fm2]=sched2.from.split(":").map(Number);const[th2,tm2]=sched2.to.split(":").map(Number);auto2=Math.round(((th2+tm2/60)-(fh2+fm2/60))*r2);}setEditEntry(v=>({...v,clientId:newClientId,amount:auto2?String(auto2):v.amount}));}} style={iStyle2}>
+          <select value={editEntry.clientId||""} onChange={e=>{
+            const newClientId=e.target.value;
+            const c2=clients.find(cc=>cc.id===newClientId||cc.id===parseInt(newClientId));
+            const dayName2=HEB_DAYS[openDay.date.getDay()];
+            const sched2=c2&&(c2.daySchedules||[]).find(ds=>ds.day===dayName2);
+            let auto2=0;
+            if(sched2&&c2&&c2.payModel!=="גלובאלי"){
+              const r2=parseFloat(c2.hourlyRate)||0;
+              const[fh2,fm2]=sched2.from.split(":").map(Number);
+              const[th2,tm2]=sched2.to.split(":").map(Number);
+              auto2=Math.round(((th2+tm2/60)-(fh2+fm2/60))*r2);
+            }
+            setEditEntry(v=>({...v,clientId:newClientId,amount:auto2?String(auto2):v.amount}));
+          }} style={iStyle2}>
             <option value="">בחרי לקוח</option>
             {clients.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </div>
-
         {(()=>{
           const c=editEntry.clientId?getClient(editEntry.clientId):null;
           const isG=c&&c.payModel==="גלובאלי";
           const hasCook=c&&(c.responsibilities||[]).includes("בישול");
-          const rate=parseFloat(c?.hourlyRate)||0;
-          // calc daily amount from daySchedules for the selected day
-          const dayName=HEB_DAYS[openDay.getDay()];
+          const dayName=HEB_DAYS[openDay.date.getDay()];
           const sched=c&&(c.daySchedules||[]).find(ds=>ds.day===dayName);
           let autoAmount=0;
-          if(sched&&rate&&!isG){
-            const[fh,fm]=sched.from.split(":").map(Number);
-            const[th,tm]=sched.to.split(":").map(Number);
-            autoAmount=Math.round(((th+tm/60)-(fh+fm/60))*rate);
-          }
-          if(autoAmount&&!editEntry.amount){
-            // pre-fill
-          }
+          if(sched&&c&&!isG){const r=parseFloat(c.hourlyRate)||0;const[fh,fm]=sched.from.split(":").map(Number);const[th,tm]=sched.to.split(":").map(Number);autoAmount=Math.round(((th+tm/60)-(fh+fm/60))*r);}
           return <>
             {!isG&&c&&<>
               <div style={{marginBottom:10}}>
@@ -616,15 +693,7 @@ function ScheduleTab({clients}) {
                 <div style={{fontSize:11,color:"#888",marginBottom:3}}>שולם (₪)</div>
                 <input value={editEntry.paid||""} onChange={e=>setEditEntry(v=>({...v,paid:e.target.value}))} placeholder="0" style={iStyle2}/>
               </div>
-              {(()=>{
-                const amt=parseFloat(editEntry.amount)||autoAmount;
-                const paid=parseFloat(editEntry.paid)||0;
-                const bal=amt-paid;
-                if(!amt)return null;
-                return <div style={{background:bal<=0?"#f0faf4":"#fce4ec",borderRadius:8,padding:"8px 12px",marginBottom:10,fontSize:13,fontWeight:600,color:bal<=0?"#2e7d32":"#c62828"}}>
-                  {bal<=0?"✓ שולם במלואו":`יתרה לתשלום: ₪${bal.toLocaleString()}`}
-                </div>;
-              })()}
+              {(()=>{const amt=parseFloat(editEntry.amount)||autoAmount;const paid=parseFloat(editEntry.paid)||0;const bal=amt-paid;if(!amt)return null;return <div style={{background:bal<=0?"#f0faf4":"#fce4ec",borderRadius:8,padding:"8px 12px",marginBottom:10,fontSize:13,fontWeight:600,color:bal<=0?"#2e7d32":"#c62828"}}>{bal<=0?"✓ שולם במלואו":`יתרה לתשלום: ₪${bal.toLocaleString()}`}</div>;})()}
             </>}
             {isG&&hasCook&&<div style={{marginBottom:10}}>
               <div style={{fontSize:11,color:"#888",marginBottom:3}}>🍳 מה בישלתי היום</div>
@@ -632,9 +701,8 @@ function ScheduleTab({clients}) {
             </div>}
           </>;
         })()}
-
         <div style={{display:"flex",justifyContent:"space-between",marginTop:16}}>
-          <button onClick={()=>{const k=dateKey(openDay);setEntries(e=>{const n={...e};delete n[k];return n;});setOpenDay(null);}} style={{background:"none",border:"1px solid #fcc",borderRadius:8,padding:"8px 14px",fontSize:13,cursor:"pointer",color:"#c62828",fontFamily:"inherit"}}>מחיקה</button>
+          <button onClick={()=>{setEntries(e=>{const n={...e};delete n[openDay.k];return n;});setOpenDay(null);}} style={{background:"none",border:"1px solid #fcc",borderRadius:8,padding:"8px 14px",fontSize:13,cursor:"pointer",color:"#c62828",fontFamily:"inherit"}}>מחיקה</button>
           <div style={{display:"flex",gap:10}}>
             <button onClick={()=>setOpenDay(null)} style={{background:"none",border:"1px solid #ddd",borderRadius:8,padding:"8px 16px",fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>ביטול</button>
             <button onClick={saveEntry} style={{background:"#1a1a1a",color:"white",border:"none",borderRadius:8,padding:"8px 16px",fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>שמירה</button>
