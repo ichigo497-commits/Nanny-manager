@@ -583,7 +583,7 @@ function ScheduleTab({clients}) {
 
         <div style={{marginBottom:10}}>
           <div style={{fontSize:11,color:"#888",marginBottom:3}}>לקוח</div>
-          <select value={editEntry.clientId||""} onChange={e=>setEditEntry(v=>({...v,clientId:e.target.value}))} style={iStyle2}>
+          <select value={editEntry.clientId||""} onChange={e=>{const newClientId=e.target.value;const c2=clients.find(cc=>cc.id===newClientId||cc.id===parseInt(newClientId));const dayName2=HEB_DAYS[openDay.getDay()];const sched2=c2&&(c2.daySchedules||[]).find(ds=>ds.day===dayName2);let auto2=0;if(sched2&&c2&&c2.payModel!=="גלובאלי"){const r2=parseFloat(c2.hourlyRate)||0;const[fh2,fm2]=sched2.from.split(":").map(Number);const[th2,tm2]=sched2.to.split(":").map(Number);auto2=Math.round(((th2+tm2/60)-(fh2+fm2/60))*r2);}setEditEntry(v=>({...v,clientId:newClientId,amount:auto2?String(auto2):v.amount}));}} style={iStyle2}>
             <option value="">בחרי לקוח</option>
             {clients.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
