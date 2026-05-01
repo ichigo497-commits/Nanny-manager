@@ -484,25 +484,84 @@ function ScheduleTab({clients}) {
   const[entries,setEntriesRaw]=useState(()=>{try{return JSON.parse(localStorage.getItem("nanny_schedule")||"{}");}catch{return{};}});
   const[openDay,setOpenDay]=useState(null);
   const[editEntry,setEditEntry]=useState({});
-  const[autoApply,setAutoApply]=useState({});// {clientId: true/false}
 
   const setEntries=u=>{setEntriesRaw(p=>{const n=typeof u==="function"?u(p):u;try{localStorage.setItem("nanny_schedule",JSON.stringify(n));window.saveToCloud&&window.saveToCloud("schedule",n);}catch{};return n;});};
 
   const now=new Date();
   const year=new Date(now.getFullYear(),now.getMonth()+monthOffset,1).getFullYear();
   const month=new Date(now.getFullYear(),now.getMonth()+monthOffset,1).getMonth();
-  const firstDay=new Date(year,month,1);
   const daysInMonth=new Date(year,month+1,0).getDate();
+  const firstDay=new Date(year,month,1);
   const startDow=firstDay.getDay();
 
   const dateKey=(y,m,d)=>`${y}-${String(m+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
   const getClient=id=>clients.find(c=>c.id===id||c.id===parseInt(id));
   const iStyle2={width:"100%",border:"1px solid #e0dbd0",borderRadius:7,padding:"7px 10px",fontSize:13,fontFamily:"inherit",background:"#fafafa",outline:"none",boxSizing:"border-box"};
 
-  // Auto-apply: fill all matching days for a client
+  // Hebrew calendar data
+  const HEB_NUMS=["","א׳","ב׳","ג׳","ד׳","ה׳","ו׳","ז׳","ח׳","ט׳","י׳","י״א","י״ב","י״ג","י״ד","ט״ו","ט״ז","י״ז","י״ח","י״ט","כ׳","כ״א","כ״ב","כ״ג","כ״ד","כ״ה","כ״ו","כ״ז","כ״ח","כ״ט","ל׳"];
+  const HEB_MONTH_NAMES=["תשרי","חשון","כסלו","טבת","שבט","אדר","ניסן","אייר","סיון","תמוז","אב","אלול","אדר א׳","אדר ב׳"];
+
+  // Simplified Hebrew date conversion (accurate enough for display)
+  function toHebrewDate(date) {
+    // Using a lookup table approach for 2025-2027
+    const d=date.getDate(),m=date.getMonth(),y=date.getFullYear();
+    // Epoch: 1 Tishri 5786 = Oct 2, 2025
+    const epoch=new Date(2025,9,2);
+    const diff=Math.round((date-epoch)/(1000*60*60*24));
+    // Hebrew year 5786 months: Tishri(30),Cheshvan(29),Kislev(30),Tevet(29),Shvat(30),Adar(29),Nisan(30),Iyar(29),Sivan(30),Tamuz(29),Av(30),Elul(29)
+    const lengths5786=[30,29,30,29,30,29,30,29,30,29,30,29];
+    const lengths5787=[30,30,30,29,30,29,30,29,30,29,30,29]; // 5787
+    let day=diff,hmonth=0,hday=1,hyear=5786;
+    let lens=lengths5786;
+    if(day<0){
+      // Before epoch - 5785
+      const epoch5785=new Date(2024,9,3);
+      const d2=Math.round((date-epoch5785)/(1000*60*60*24));
+      const l5785=[30,29,30,29,30,29,30,29,30,29,30,29];
+      let dd=d2;hyear=5785;lens=l5785;
+      for(let i=0;i<12;i++){if(dd<lens[i]){hmonth=i;hday=dd+1;break;}dd-=lens[i];}
+    } else {
+      let dd=day;
+      for(let i=0;i<12;i++){
+        const l=lens[i];
+        if(dd<l){hmonth=i;hday=dd+1;break;}
+        dd-=l;
+        if(i===11){hyear=5787;lens=lengths5787;dd-=0;}
+      }
+      if(hyear===5787){let dd2=day-lengths5786.reduce((a,b)=>a+b,0);for(let i=0;i<12;i++){if(dd2<lengths5787[i]){hmonth=i;hday=dd2+1;break;}dd2-=lengths5787[i];}}
+    }
+    return {day:hday,month:hmonth,year:hyear,monthName:HEB_MONTH_NAMES[hmonth],dayStr:HEB_NUMS[Math.min(hday,30)]};
+  }
+
+  // Jewish holidays (Gregorian dates)
+  const HOLIDAYS={
+    "2025-09-22":"ראש השנה","2025-09-23":"ראש השנה ב׳","2025-10-01":"יום כיפור",
+    "2025-10-06":"סוכות","2025-10-07":"סוכות","2025-10-13":"שמיני עצרת","2025-10-14":"שמחת תורה",
+    "2025-12-14":"חנוכה","2025-12-15":"חנוכה","2025-12-16":"חנוכה","2025-12-17":"חנוכה",
+    "2025-12-18":"חנוכה","2025-12-19":"חנוכה","2025-12-20":"חנוכה","2025-12-21":"חנוכה",
+    "2026-03-03":"פורים","2026-03-04":"פורים",
+    "2026-04-01":"פסח","2026-04-02":"פסח ב׳","2026-04-07":"פסח ז׳","2026-04-08":"פסח ח׳",
+    "2026-04-15":"יום השואה","2026-04-22":"יום הזיכרון","2026-04-23":"יום העצמאות",
+    "2026-05-04":"ל״ג בעומר","2026-05-15":"ערב שבועות","2026-05-21":"שבועות","2026-05-22":"שבועות ב׳",
+    "2026-09-11":"ראש השנה","2026-09-12":"ראש השנה ב׳","2026-09-20":"יום כיפור",
+    "2026-09-25":"סוכות","2026-10-02":"שמיני עצרת","2026-10-03":"שמחת תורה",
+  };
+
+  // Shabbat times for Tel Aviv (approximate)
+  function getShabbatTimes(date) {
+    if(date.getDay()!==5&&date.getDay()!==6)return null;
+    const m=date.getMonth();
+    // Entry times (Friday) and exit (Saturday) - approximate by month
+    const entryTimes=["16:20","16:35","17:00","17:25","17:50","18:10","18:20","18:15","17:50","17:15","16:45","16:20"];
+    const exitTimes= ["17:25","17:40","18:05","18:30","18:55","19:15","19:25","19:20","18:55","18:20","17:50","17:25"];
+    if(date.getDay()===5)return {type:"entry",time:entryTimes[m]};
+    return {type:"exit",time:exitTimes[m]};
+  }
+
+  // Auto-apply
   const applyClientToMonth=(clientId)=>{
-    const c=getClient(clientId);
-    if(!c)return;
+    const c=getClient(clientId);if(!c)return;
     const scheduledDays=(c.daySchedules||[]).map(ds=>ds.day);
     const newEntries={...entries};
     for(let d=1;d<=daysInMonth;d++){
@@ -512,15 +571,8 @@ function ScheduleTab({clients}) {
         const k=dateKey(year,month,d);
         const sched=(c.daySchedules||[]).find(ds=>ds.day===dayName);
         let autoAmt=0;
-        if(sched&&c.payModel!=="גלובאלי"){
-          const r=parseFloat(c.hourlyRate)||0;
-          const[fh,fm]=sched.from.split(":").map(Number);
-          const[th,tm]=sched.to.split(":").map(Number);
-          autoAmt=Math.round(((th+tm/60)-(fh+fm/60))*r);
-        }
-        if(!newEntries[k]){
-          newEntries[k]={clientId:String(clientId),amount:autoAmt?String(autoAmt):"",paid:"",cooking:""};
-        }
+        if(sched&&c.payModel!=="גלובאלי"){const r=parseFloat(c.hourlyRate)||0;const[fh,fm]=sched.from.split(":").map(Number);const[th,tm]=sched.to.split(":").map(Number);autoAmt=Math.round(((th+tm/60)-(fh+fm/60))*r);}
+        if(!newEntries[k])newEntries[k]={clientId:String(clientId),amount:autoAmt?String(autoAmt):"",paid:"",cooking:""};
       }
     }
     setEntries(newEntries);
@@ -528,9 +580,7 @@ function ScheduleTab({clients}) {
 
   const removeClientFromMonth=(clientId)=>{
     const newEntries={};
-    Object.keys(entries).forEach(k=>{
-      if(entries[k].clientId!==String(clientId))newEntries[k]=entries[k];
-    });
+    Object.keys(entries).forEach(k=>{if(entries[k].clientId!==String(clientId))newEntries[k]=entries[k];});
     setEntries(newEntries);
   };
 
@@ -538,7 +588,6 @@ function ScheduleTab({clients}) {
   const monthEntries=Object.entries(entries).filter(([k])=>k.startsWith(`${year}-${String(month+1).padStart(2,"0")}`));
   const totalExpected=monthEntries.reduce((s,[,e])=>{const c=getClient(e.clientId);if(!c||c.payModel==="גלובאלי")return s;return s+(parseFloat(e.amount)||0);},0);
   const totalPaid=monthEntries.reduce((s,[,e])=>{const c=getClient(e.clientId);if(!c||c.payModel==="גלובאלי")return s;return s+(parseFloat(e.paid)||0);},0);
-  // Also add global clients monthly salary
   const globalMonthly=clients.filter(c=>c.payModel==="גלובאלי").reduce((s,c)=>{const r=parseFloat(c.hourlyRate)||0;const h=parseFloat(calcEarnings(c).hoursPerWeek)||0;const cm=Math.round(h*4.33*r);return s+(parseFloat(c.manualSalary)||cm);},0);
   const totalAll=totalExpected+globalMonthly;
   const totalUnpaid=totalExpected-totalPaid;
@@ -548,11 +597,7 @@ function ScheduleTab({clients}) {
     setEditEntry(entries[k]||{clientId:"",amount:"",paid:"",cooking:""});
     setOpenDay({d,k,date:new Date(year,month,d)});
   };
-
-  const saveEntry=()=>{
-    setEntries(e=>({...e,[openDay.k]:editEntry}));
-    setOpenDay(null);
-  };
+  const saveEntry=()=>{setEntries(e=>({...e,[openDay.k]:editEntry}));setOpenDay(null);};
 
   const cells=[];
   for(let i=0;i<startDow;i++)cells.push(null);
@@ -570,7 +615,7 @@ function ScheduleTab({clients}) {
       <button onClick={()=>setMonthOffset(m=>m+1)} style={{background:"none",border:"1px solid #ddd",borderRadius:8,padding:"6px 14px",fontSize:18,cursor:"pointer"}}>›</button>
     </div>
 
-    {/* Monthly summary */}
+    {/* Summary */}
     <div style={{display:"flex",gap:10,marginBottom:12,flexWrap:"wrap"}}>
       <div style={{background:"white",borderRadius:10,padding:"10px 18px",border:"1px solid #e8e4dc"}}>
         <div style={{fontSize:18,fontWeight:700,color:"#c17b3f"}}>₪{totalAll.toLocaleString()}</div>
@@ -586,12 +631,12 @@ function ScheduleTab({clients}) {
       </div>}
     </div>
 
-    {/* Auto-apply clients */}
+    {/* Auto-apply */}
     <div style={{background:"white",borderRadius:12,padding:"12px 16px",border:"1px solid #e8e4dc",marginBottom:12}}>
       <div style={{fontSize:12,fontWeight:600,color:"#555",marginBottom:8}}>שיבוץ אוטומטי לפי ימים קבועים</div>
       <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
         {clients.map(c=>{
-          const isApplied=Object.values(entries).some(e=>e.clientId===String(c.id)&&Object.keys(entries).some(k=>k.startsWith(`${year}-${String(month+1).padStart(2,"0")}`)));
+          const isApplied=Object.entries(entries).some(([k,e])=>e.clientId===String(c.id)&&k.startsWith(`${year}-${String(month+1).padStart(2,"0")}`));
           return <div key={c.id} style={{display:"flex",alignItems:"center",gap:6,background:isApplied?"#fff3e0":"#f9f9f9",borderRadius:8,padding:"5px 10px",border:isApplied?"1px solid #c17b3f":"1px solid #e0dbd0"}}>
             <span style={{fontSize:12,fontWeight:500}}>{c.name}</span>
             {!isApplied
@@ -604,20 +649,25 @@ function ScheduleTab({clients}) {
     </div>
 
     {/* Calendar */}
-    <div style={{background:"white",borderRadius:14,border:"1px solid #e8e4dc",padding:"1rem",overflow:"hidden"}}>
+    <div style={{background:"white",borderRadius:14,border:"1px solid #e8e4dc",overflow:"hidden"}}>
       {/* Day headers */}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:2,marginBottom:4}}>
-        {HEB_DAYS.map(d=><div key={d} style={{textAlign:"center",fontSize:11,fontWeight:600,color:"#888",padding:"4px"}}>{d}</div>)}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)"}}>
+        {HEB_DAYS.map((d,i)=><div key={d} style={{textAlign:"center",fontSize:12,fontWeight:700,color:i===6?"white":"#555",padding:"8px 4px",background:i===6?"#2c4a7c":"#f5f3ee",borderLeft:"1px solid #e8e4dc"}}>{d}</div>)}
       </div>
-      {/* Day cells */}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:2}}>
+      {/* Cells */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)"}}>
         {cells.map((d,i)=>{
-          if(!d)return <div key={i}/>;
+          if(!d)return <div key={i} style={{minHeight:90,borderLeft:"1px solid #f0ece4",borderBottom:"1px solid #f0ece4",background:"#fafafa"}}/>;
+          const date=new Date(year,month,d);
+          const dow=date.getDay();
+          const isShabat=dow===6;
+          const isFriday=dow===5;
           const k=dateKey(year,month,d);
+          const holiday=HOLIDAYS[k];
+          const shabbat=getShabbatTimes(date);
+          const heb=toHebrewDate(date);
           const entry=entries[k]||{};
-          const holiday=isHoliday(new Date(year,month,d));
-          const isShabat=new Date(year,month,d).getDay()===6;
-          const isToday=new Date().getDate()===d&&new Date().getMonth()===month&&new Date().getFullYear()===year;
+          const isToday=now.getDate()===d&&now.getMonth()===month&&now.getFullYear()===year;
           const client=entry.clientId?getClient(entry.clientId):null;
           const isGlobal=client&&client.payModel==="גלובאלי";
           const hasCooking=client&&(client.responsibilities||[]).includes("בישול");
@@ -625,24 +675,43 @@ function ScheduleTab({clients}) {
           const paidNum=parseFloat(entry.paid)||0;
           const balance=amtNum-paidNum;
           const fullyPaid=amtNum>0&&balance<=0;
-          const partPaid=amtNum>0&&paidNum>0&&balance>0;
           const notPaid=amtNum>0&&paidNum===0;
+          const partPaid=amtNum>0&&paidNum>0&&balance>0;
+
+          let bg="white";
+          if(isShabat)bg="#2c4a7c";
+          else if(holiday)bg="#fffaed";
+          else if(fullyPaid)bg="#f0faf4";
+          else if(notPaid&&amtNum>0)bg="#fff8f8";
+          else if(partPaid)bg="#fffdf0";
 
           return <div key={k} onClick={()=>!isShabat&&openEntry(d)}
-            style={{minHeight:72,borderRadius:8,border:isToday?"2px solid #c17b3f":"1px solid #f0ece4",
-              padding:"4px 5px",cursor:isShabat?"default":"pointer",
-              background:holiday||isShabat?"rgba(255,255,255,0.7)":fullyPaid?"#f0faf4":notPaid&&amtNum>0?"#fce4ec":partPaid?"#fff8e1":"white",
-              position:"relative",transition:"box-shadow 0.1s"}}
-            onMouseEnter={e=>{if(!isShabat)e.currentTarget.style.boxShadow="0 2px 8px rgba(0,0,0,0.1)";}}
-            onMouseLeave={e=>e.currentTarget.style.boxShadow="none"}>
-            {holiday&&<div style={{position:"absolute",inset:0,background:"rgba(255,255,255,0.55)",borderRadius:8,zIndex:1,display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,color:"#aaa",fontWeight:600}}>חג</div>}
-            <div style={{fontSize:11,fontWeight:isToday?700:400,color:isToday?"#c17b3f":isShabat?"#ccc":"#555"}}>{d}</div>
-            {client&&<div style={{fontSize:10,fontWeight:600,color:"#333",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",marginTop:1}}>{client.name}</div>}
-            {!isGlobal&&amtNum>0&&<div style={{fontSize:10,fontWeight:700,color:fullyPaid?"#2e7d32":notPaid?"#c62828":"#f57f17",marginTop:1}}>
-              {fullyPaid?"✓ ":""}{paidNum>0&&!fullyPaid?`${paidNum.toLocaleString()}/${amtNum.toLocaleString()}`:`₪${amtNum.toLocaleString()}`}
+            style={{minHeight:90,borderLeft:"1px solid #e8e4dc",borderBottom:"1px solid #e8e4dc",
+              padding:"4px 5px",cursor:isShabat?"default":"pointer",background:bg,
+              outline:isToday?"2px solid #c17b3f":"none",outlineOffset:"-2px",
+              transition:"background 0.1s"}}
+            onMouseEnter={e=>{if(!isShabat)e.currentTarget.style.filter="brightness(0.97)";}}
+            onMouseLeave={e=>e.currentTarget.style.filter="none"}>
+            {/* Date numbers */}
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:2}}>
+              <span style={{fontSize:16,fontWeight:isToday?700:400,color:isShabat?"white":holiday?"#c17b3f":isToday?"#c17b3f":"#333"}}>{d}</span>
+              <span style={{fontSize:9,color:isShabat?"#aac":holiday?"#c17b3f":"#bbb",textAlign:"left"}}>{heb.dayStr} {heb.monthName}</span>
+            </div>
+            {/* Holiday */}
+            {holiday&&<div style={{fontSize:9,fontWeight:700,color:"#c17b3f",marginBottom:2}}>{holiday}</div>}
+            {/* Shabbat times */}
+            {isFriday&&shabbat&&<div style={{fontSize:9,color:"#555",marginBottom:2}}>כניסת שבת: {shabbat.time}</div>}
+            {isShabat&&shabbat&&<div style={{fontSize:9,color:"#aac",marginBottom:2}}>צאת השבת: {shabbat.time}</div>}
+            {/* Client */}
+            {client&&!isShabat&&<div style={{fontSize:10,fontWeight:600,color:"#333",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{client.name}</div>}
+            {/* Payment */}
+            {!isGlobal&&amtNum>0&&!isShabat&&<div style={{fontSize:10,fontWeight:700,color:fullyPaid?"#2e7d32":notPaid?"#c62828":"#f57f17"}}>
+              {fullyPaid?"✓ ₪"+amtNum.toLocaleString():partPaid?"₪"+paidNum+"/"+amtNum:"₪"+amtNum.toLocaleString()}
             </div>}
-            {isGlobal&&hasCooking&&entry.cooking&&<div style={{fontSize:9,color:"#888",marginTop:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>🍳</div>}
-            {!entry.clientId&&!isShabat&&!holiday&&<div style={{fontSize:9,color:"#ddd",marginTop:4}}>+</div>}
+            {/* Cooking */}
+            {isGlobal&&hasCooking&&entry.cooking&&<div style={{fontSize:9,color:"#888",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>🍳 {entry.cooking}</div>}
+            {/* Add hint */}
+            {!entry.clientId&&!isShabat&&!holiday&&<div style={{fontSize:9,color:"#ddd",marginTop:2}}>+</div>}
           </div>;
         })}
       </div>
@@ -652,7 +721,7 @@ function ScheduleTab({clients}) {
     {openDay&&<div onClick={e=>e.target===e.currentTarget&&setOpenDay(null)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:200}}>
       <div style={{background:"white",borderRadius:16,padding:"1.8rem",width:400,maxWidth:"96vw",direction:"rtl",maxHeight:"92vh",overflowY:"auto"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
-          <h3 style={{fontSize:16,fontWeight:600,margin:0}}>{HEB_DAYS[openDay.date.getDay()]} {openDay.d}/{month+1}</h3>
+          <h3 style={{fontSize:16,fontWeight:600,margin:0}}>{HEB_DAYS[openDay.date.getDay()]} {openDay.d}/{month+1}{HOLIDAYS[openDay.k]&&` — ${HOLIDAYS[openDay.k]}`}</h3>
           <button onClick={()=>setOpenDay(null)} style={{background:"none",border:"none",fontSize:20,cursor:"pointer",color:"#aaa"}}>✕</button>
         </div>
         <div style={{marginBottom:10}}>
@@ -663,12 +732,7 @@ function ScheduleTab({clients}) {
             const dayName2=HEB_DAYS[openDay.date.getDay()];
             const sched2=c2&&(c2.daySchedules||[]).find(ds=>ds.day===dayName2);
             let auto2=0;
-            if(sched2&&c2&&c2.payModel!=="גלובאלי"){
-              const r2=parseFloat(c2.hourlyRate)||0;
-              const[fh2,fm2]=sched2.from.split(":").map(Number);
-              const[th2,tm2]=sched2.to.split(":").map(Number);
-              auto2=Math.round(((th2+tm2/60)-(fh2+fm2/60))*r2);
-            }
+            if(sched2&&c2&&c2.payModel!=="גלובאלי"){const r2=parseFloat(c2.hourlyRate)||0;const[fh2,fm2]=sched2.from.split(":").map(Number);const[th2,tm2]=sched2.to.split(":").map(Number);auto2=Math.round(((th2+tm2/60)-(fh2+fm2/60))*r2);}
             setEditEntry(v=>({...v,clientId:newClientId,amount:auto2?String(auto2):v.amount}));
           }} style={iStyle2}>
             <option value="">בחרי לקוח</option>
@@ -712,6 +776,7 @@ function ScheduleTab({clients}) {
     </div>}
   </div>;
 }
+
 
 /* ── Requests Tab ── */
 function RequestsTab({clients}) {
